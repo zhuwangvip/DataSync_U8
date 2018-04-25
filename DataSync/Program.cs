@@ -11,8 +11,9 @@ namespace DataSync
     {
         static void Main(string[] args)
         {
-            ManualSync sync = new ManualSync("StoreDefine");
-            sync.SyncData();
+            RetailVouchDetail();
+            //ManualSync sync = new ManualSync("StoreDefine");
+            //sync.SyncData();
             //RetailVouchDetail();
             //using (SmartThreadPool smartThreadPool = new SmartThreadPool())
             //{
@@ -31,7 +32,7 @@ namespace DataSync
             sync.SyncData();
             return 0;
         }
-        private static object RetailVouchDetail(object obj)
+        private static object RetailVouchDetail()
         {
             Sync sync = new Sync("RetailVouchDetail");
             sync.SyncData();

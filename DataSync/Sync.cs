@@ -43,21 +43,31 @@ namespace DataSync
             {
                 string EndTime = GetEndTime();
                 DataTable dataTable = GetDataSet(EndTime).Tables[0];
-                using (SmartThreadPool smartThreadPool = new SmartThreadPool())
+                STPStartInfo stpStartInfo = new STPStartInfo();
+                stpStartInfo.MinWorkerThreads = 5;
+                stpStartInfo.MaxWorkerThreads = 500;
+                using (SmartThreadPool smartThreadPool = new SmartThreadPool(stpStartInfo))
                 {
                     List<IWorkItemResult> wirs = new List<IWorkItemResult>();
                     int count = 0;
                     foreach (DataRow item in dataTable.Rows)
                     {
-                        if (count == 500)
+                        try
                         {
-                            SmartThreadPool.WaitAll(wirs.ToArray());
-                            wirs.RemoveAll(it => true);
-                            count = 0;
+                            if (count == 500)
+                            {
+                                SmartThreadPool.WaitAll(wirs.ToArray());
+                                wirs.RemoveAll(it => true);
+                                count = 0;
+                            }
+                            IWorkItemResult wir = smartThreadPool.QueueWorkItem(new WorkItemCallback(@delegate), item);
+                            wirs.Add(wir);
+                            count++;
                         }
-                        IWorkItemResult wir = smartThreadPool.QueueWorkItem(new WorkItemCallback(@delegate), item);
-                        wirs.Add(wir);
-                        count++;
+                        catch (Exception ex)
+                        {
+                            //ShowMessageInfo("×××[{0}]图片文件同步发生致命异常，失败原因:{1}", fileName, ex.Message);
+                        }
                     }
                 }
             }
