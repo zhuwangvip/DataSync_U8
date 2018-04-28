@@ -12,8 +12,10 @@ namespace DataSync
     {
         static void Main(string[] args)
         {
-            new Thread(new ParameterizedThreadStart(RetailVouch)).Start(0);
-            new Thread(new ParameterizedThreadStart(RetailVouchDetail)).Start(0);
+            //RetailVouch(1);
+            RetailVouchDetail(1);
+            //new Thread(new ParameterizedThreadStart(RetailVouch)).Start(0);
+            //new Thread(new ParameterizedThreadStart(RetailVouchDetail)).Start(0);
             //string type = Console.ReadLine();
 
             //RetailVouchDetail();

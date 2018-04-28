@@ -15,6 +15,7 @@ namespace DataSync
     {
         private string TableName = string.Empty;
         private string TimeName = string.Empty;
+        private string priEndTime = string.Empty;
         private delegate object Delegate(object row); // 定义一个委托
         private Delegate @delegate;
 
@@ -42,37 +43,33 @@ namespace DataSync
             if (!string.IsNullOrEmpty(TableName))
             {
                 string EndTime = GetEndTime();
-                DataTable dataTable = GetDataSet(EndTime).Tables[0];
-                STPStartInfo stpStartInfo = new STPStartInfo();
-                stpStartInfo.MinWorkerThreads = 5;
-                stpStartInfo.MaxWorkerThreads = 500;
-                using (SmartThreadPool smartThreadPool = new SmartThreadPool(stpStartInfo))
+                priEndTime = EndTime;
+                //2016 - 12 - 30 20:57:58.803
+                int Count = GetCount(EndTime);
+                if (Count != 0)
                 {
-                    List<IWorkItemResult> wirs = new List<IWorkItemResult>();
-                    int count = 0;
-                    foreach (DataRow item in dataTable.Rows)
+                    int Page = Count % 2000 == 0 ? Count / 2000 : Count / 2000 + 1;//第一步计算该开多少个线程
+                                                                                   //第二步多线程执行方法
+                                                                                   //STPStartInfo stpStartInfo = new STPStartInfo();
+                                                                                   //stpStartInfo.MinWorkerThreads = 5;
+                                                                                   //stpStartInfo.MaxWorkerThreads = 500;
+                                                                                   //using (SmartThreadPool smartThreadPool = new SmartThreadPool(stpStartInfo))
+                                                                                   //{
+                                                                                   //    List<IWorkItemResult> wirs = new List<IWorkItemResult>();
+                                                                                   //    for (int i = 1; i <= Page; i++)
+                                                                                   //    {
+                                                                                   //        IWorkItemResult wir = smartThreadPool.QueueWorkItem(new WorkItemCallback(@delegate), i);
+                                                                                   //        wirs.Add(wir);
+                                                                                   //    }
+                                                                                   //    SmartThreadPool.WaitAll(wirs.ToArray());
+                                                                                   //}
+                    for (int i = 1; i <= Page; i++)
                     {
-                        try
-                        {
-                            if (count == 500)
-                            {
-                                SmartThreadPool.WaitAll(wirs.ToArray());
-                                wirs.RemoveAll(it => true);
-                                count = 0;
-                            }
-                            IWorkItemResult wir = smartThreadPool.QueueWorkItem(new WorkItemCallback(@delegate), item);
-                            wirs.Add(wir);
-                            count++;
-                        }
-                        catch (Exception ex)
-                        {
-                            //ShowMessageInfo("×××[{0}]图片文件同步发生致命异常，失败原因:{1}", fileName, ex.Message);
-                        }
+                        @delegate(i);
                     }
                 }
             }
         }
-
         /// <summary>
         /// 获取本地服务器上某表的最后一条数据 朱旺 2018.4.19 add
         /// </summary>
@@ -93,129 +90,166 @@ namespace DataSync
         }
 
         /// <summary>
-        /// 获取U8数据（排除本地服务器有的数据）  朱旺  2018.4.19 
+        /// 获取某个表有多少条数据  朱旺  2018.4.23 add
         /// </summary>
-        /// <param name="EndTime"></param>
         /// <returns></returns>
-        private DataSet GetDataSet(string EndTime)
+        private int GetCount(string EndTime)
         {
             StringBuilder Sql = new StringBuilder();
             if (TableName == "RetailVouchDetail")
             {
-                Sql.Append(" select * from (select(select fdtmAddTime from RetailVouch where fchrRetailVouchID = a.fchrRetailVouchID) as fdtmAddTime2, *from RetailVouchDetail as a");
-                Sql.AppendFormat(" ) as b where b.fdtmAddTime2 > '{0}'  order by b.fdtmAddTime2", EndTime);
+                Sql.Append(" select count(*) from RetailVouchDetail ");
+                if (!string.IsNullOrEmpty(EndTime))
+                {
+                    Sql.AppendFormat("  where fdtmOldSellDate > '{0}'", EndTime);
+                }
             }
             else
             {
-                Sql.AppendFormat("select * from {0} where {1}>'{2}'  order by {1}", TableName, TimeName, EndTime);
+                Sql.AppendFormat("select count(*) from {0} ", TableName);
+                if (!string.IsNullOrEmpty(EndTime))
+                {
+                    Sql.AppendFormat("  where {0}>'{1}' ", TimeName, EndTime);
+                }
             }
-            DataSet ds = DbHelperSQL.Query(DbHelperSQL.u8connectionString, Sql.ToString());
-            return ds;
+            object CountObj = DbHelperSQL.GetSingle(DbHelperSQL.u8connectionString, Sql.ToString());
+            return int.Parse(CountObj.ToString());
         }
 
+        #region 订单主表数据同步语句块  朱旺 2018.4.23 add
         /// <summary>
-        /// 对订单主表插入数据  朱旺 2018.4.19 add
+        /// 往订单主表插入数据(BLL)  朱旺  2018.4.23 add
         /// </summary>
-        /// <param name="row"></param>
+        /// <param name="obj"></param>
         /// <returns></returns>
         private object AddRetailVouchData(object obj)
         {
-            DataRow row = obj as DataRow;
+            DataTable dataTable = GetRetailVouch(int.Parse(obj.ToString())).Tables[0];
+            foreach (DataRow item in dataTable.Rows)
+            {
+                AddRetailVouchData(item);
+            }
+            return 0;
+        }
+        /// <summary>
+        /// 获取订单主表dataset 朱旺 2018.4.23 add
+        /// </summary>
+        /// <param name="Page"></param>
+        /// <returns></returns>
+        private DataSet GetRetailVouch(int Page)
+        {
+            StringBuilder Sql = new StringBuilder();
+            Sql.AppendFormat("select * from {0} ", TableName);
+            if (!string.IsNullOrEmpty(priEndTime))
+            {
+                Sql.AppendFormat("where {0} >'{1}' ", TimeName, priEndTime);
+            }
+            Sql.AppendFormat(" order by {0}  OFFSET　{1} ROW  FETCH NEXT {2} ROW ONLY", TimeName, (Page - 1) * 2000, 2000);
+            DataSet ds = DbHelperSQL.Query(DbHelperSQL.u8connectionString, Sql.ToString());
+            return ds;
+        }
+        /// <summary>
+        /// 往订单主表插入数据(DAL)  朱旺  2018.4.23 add
+        /// </summary>
+        /// <param name="row"></param>
+        /// <returns></returns>
+        private bool AddRetailVouchData(DataRow row)
+        {
             StringBuilder strSql = new StringBuilder();
             strSql.Append("insert into [RetailVouch](");
             strSql.Append("[fchrAccountID],[fchrStoreDefineID],[fchrRetailVouchID],[fchrDepartmentID],[fdtmDate],[fchrSquadID],[fchrSquadName],[fchrBackID],[fchrRetailReportID],[fchrVerifier],[fbitExport],[fchrCode],[fchrDiscountCardCode],[fchrMaker],[fchrGatheringVouchID],[flotGatheringMoney],[fchrCoRetailVouchID],[flotDiscountCardRate],[fchrWholeDiscountCode],[flotWholeDiscountRate],[flotWholeDiscount],[fnarvipcardcode],[fdecvipdiscountrate],[flotEffaceMoney],[fchrSaleTypeCode],[fchrRetailVouchRelatingID],[fchrPromotionPloyID],[fbitSettle],[flotCurrentPoint],[flotPointBalance],[fchrAddPointRuleID],[fchrVIPCardClassID],[fchrVipConsumerID],[fchrPromotionPloyIDList],[fdtmPlanShipmentDate],[fdtmShipmentDate],[fchrRemark],[flotVipDiscountMoneySum],[flotDiscountCardMoneySum],[flotPromotionPloyMoneySum],[flotLocaleDiscountSum],[fbitCalcVIP],[flotSaleMoney],[flotMoneySum],[flotQuantitySum],[flotDiscountSum],[ftinPreSellType],[fchrShipmentStoreID],[ftinPreDownload],[ftinShipDownload],[fchrPreSellStoreID],[fbitRestore],[fbitAllowGiftToken],[fbitAllowStoreCard],[fchrOweCustID],[fdtmPointPay],[flotPointPay],[flotPointPayMoney],[fchrSaleTypeID],[fchrUH1],[fchrUH2],[fchrUH3],[fdtmUH4],[fintUH5],[fdtmUH6],[flotUH7],[fchrUH8],[fchrUH9],[fchrUH10],[fchrUH11],[fchrUH12],[fchrUH13],[fchrUH14],[fintUH15],[flotUH16],[fchrdeliveradd],[fchrcusperson],[fchrCenterDeliveryID],[fchrCenterDOrgID],[fbitSN],[fchrPostalCode],[fchrMobileNo],[fchrECTradeCode],[fchrECOrderCode],[fdtmECTrade],[fintOID],[fchrExpressCode],[fdtmAddTime])");
             strSql.Append(" values (");
             strSql.Append("@fchrAccountID,@fchrStoreDefineID,@fchrRetailVouchID,@fchrDepartmentID,@fdtmDate,@fchrSquadID,@fchrSquadName,@fchrBackID,@fchrRetailReportID,@fchrVerifier,@fbitExport,@fchrCode,@fchrDiscountCardCode,@fchrMaker,@fchrGatheringVouchID,@flotGatheringMoney,@fchrCoRetailVouchID,@flotDiscountCardRate,@fchrWholeDiscountCode,@flotWholeDiscountRate,@flotWholeDiscount,@fnarvipcardcode,@fdecvipdiscountrate,@flotEffaceMoney,@fchrSaleTypeCode,@fchrRetailVouchRelatingID,@fchrPromotionPloyID,@fbitSettle,@flotCurrentPoint,@flotPointBalance,@fchrAddPointRuleID,@fchrVIPCardClassID,@fchrVipConsumerID,@fchrPromotionPloyIDList,@fdtmPlanShipmentDate,@fdtmShipmentDate,@fchrRemark,@flotVipDiscountMoneySum,@flotDiscountCardMoneySum,@flotPromotionPloyMoneySum,@flotLocaleDiscountSum,@fbitCalcVIP,@flotSaleMoney,@flotMoneySum,@flotQuantitySum,@flotDiscountSum,@ftinPreSellType,@fchrShipmentStoreID,@ftinPreDownload,@ftinShipDownload,@fchrPreSellStoreID,@fbitRestore,@fbitAllowGiftToken,@fbitAllowStoreCard,@fchrOweCustID,@fdtmPointPay,@flotPointPay,@flotPointPayMoney,@fchrSaleTypeID,@fchrUH1,@fchrUH2,@fchrUH3,@fdtmUH4,@fintUH5,@fdtmUH6,@flotUH7,@fchrUH8,@fchrUH9,@fchrUH10,@fchrUH11,@fchrUH12,@fchrUH13,@fchrUH14,@fintUH15,@flotUH16,@fchrdeliveradd,@fchrcusperson,@fchrCenterDeliveryID,@fchrCenterDOrgID,@fbitSN,@fchrPostalCode,@fchrMobileNo,@fchrECTradeCode,@fchrECOrderCode,@fdtmECTrade,@fintOID,@fchrExpressCode,@fdtmAddTime)");
             SqlParameter[] parameters = {
-                    new SqlParameter("@fchrAccountID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@fchrStoreDefineID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@fchrRetailVouchID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@fchrDepartmentID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@fdtmDate", SqlDbType.DateTime),
-                    new SqlParameter("@fchrSquadID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@fchrSquadName", SqlDbType.NVarChar,50),
-                    new SqlParameter("@fchrBackID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@fchrRetailReportID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@fchrVerifier", SqlDbType.NVarChar,50),
-                    new SqlParameter("@fbitExport", SqlDbType.Bit),
-                    new SqlParameter("@fchrCode", SqlDbType.NVarChar,30),
-                    new SqlParameter("@fchrDiscountCardCode", SqlDbType.NVarChar,20),
-                    new SqlParameter("@fchrMaker", SqlDbType.NVarChar,50),
-                    new SqlParameter("@fchrGatheringVouchID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@flotGatheringMoney", SqlDbType.Decimal),
-                    new SqlParameter("@fchrCoRetailVouchID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@flotDiscountCardRate", SqlDbType.Decimal),
-                    new SqlParameter("@fchrWholeDiscountCode", SqlDbType.NVarChar,50),
-                    new SqlParameter("@flotWholeDiscountRate", SqlDbType.Decimal),
-                    new SqlParameter("@flotWholeDiscount", SqlDbType.Decimal),
-                    new SqlParameter("@fnarvipcardcode", SqlDbType.NVarChar,30),
-                    new SqlParameter("@fdecvipdiscountrate", SqlDbType.Decimal),
-                    new SqlParameter("@flotEffaceMoney", SqlDbType.Decimal),
-                    new SqlParameter("@fchrSaleTypeCode", SqlDbType.NVarChar,50),
-                    new SqlParameter("@fchrRetailVouchRelatingID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@fchrPromotionPloyID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@fbitSettle", SqlDbType.Bit),
-                    new SqlParameter("@flotCurrentPoint", SqlDbType.Decimal),
-                    new SqlParameter("@flotPointBalance", SqlDbType.Decimal),
-                    new SqlParameter("@fchrAddPointRuleID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@fchrVIPCardClassID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@fchrVipConsumerID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@fchrPromotionPloyIDList", SqlDbType.NVarChar,800),
-                    new SqlParameter("@fdtmPlanShipmentDate", SqlDbType.DateTime),
-                    new SqlParameter("@fdtmShipmentDate", SqlDbType.DateTime),
-                    new SqlParameter("@fchrRemark", SqlDbType.NVarChar,200),
-                    new SqlParameter("@flotVipDiscountMoneySum", SqlDbType.Decimal),
-                    new SqlParameter("@flotDiscountCardMoneySum", SqlDbType.Decimal),
-                    new SqlParameter("@flotPromotionPloyMoneySum", SqlDbType.Decimal),
-                    new SqlParameter("@flotLocaleDiscountSum", SqlDbType.Decimal),
-                    new SqlParameter("@fbitCalcVIP", SqlDbType.Int),
-                    new SqlParameter("@flotSaleMoney", SqlDbType.Decimal),
-                    new SqlParameter("@flotMoneySum", SqlDbType.Float),
-                    new SqlParameter("@flotQuantitySum", SqlDbType.Float),
-                    new SqlParameter("@flotDiscountSum", SqlDbType.Decimal),
-                    new SqlParameter("@ftinPreSellType", SqlDbType.Int),
-                    new SqlParameter("@fchrShipmentStoreID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@ftinPreDownload", SqlDbType.Int),
-                    new SqlParameter("@ftinShipDownload", SqlDbType.Int),
-                    new SqlParameter("@fchrPreSellStoreID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@fbitRestore", SqlDbType.Bit),
-                    new SqlParameter("@fbitAllowGiftToken", SqlDbType.Bit),
-                    new SqlParameter("@fbitAllowStoreCard", SqlDbType.Bit),
-                    new SqlParameter("@fchrOweCustID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@fdtmPointPay", SqlDbType.DateTime),
-                    new SqlParameter("@flotPointPay", SqlDbType.Decimal),
-                    new SqlParameter("@flotPointPayMoney", SqlDbType.Decimal),
-                    new SqlParameter("@fchrSaleTypeID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@fchrUH1", SqlDbType.NVarChar,20),
-                    new SqlParameter("@fchrUH2", SqlDbType.NVarChar,20),
-                    new SqlParameter("@fchrUH3", SqlDbType.NVarChar,20),
-                    new SqlParameter("@fdtmUH4", SqlDbType.DateTime),
-                    new SqlParameter("@fintUH5", SqlDbType.Int),
-                    new SqlParameter("@fdtmUH6", SqlDbType.DateTime),
-                    new SqlParameter("@flotUH7", SqlDbType.Decimal),
-                    new SqlParameter("@fchrUH8", SqlDbType.NVarChar,4),
-                    new SqlParameter("@fchrUH9", SqlDbType.NVarChar,8),
-                    new SqlParameter("@fchrUH10", SqlDbType.NVarChar,60),
-                    new SqlParameter("@fchrUH11", SqlDbType.NVarChar,120),
-                    new SqlParameter("@fchrUH12", SqlDbType.NVarChar,120),
-                    new SqlParameter("@fchrUH13", SqlDbType.NVarChar,120),
-                    new SqlParameter("@fchrUH14", SqlDbType.NVarChar,120),
-                    new SqlParameter("@fintUH15", SqlDbType.Int),
-                    new SqlParameter("@flotUH16", SqlDbType.Decimal),
-                    new SqlParameter("@fchrdeliveradd", SqlDbType.NVarChar,255),
-                    new SqlParameter("@fchrcusperson", SqlDbType.NVarChar,100),
-                    new SqlParameter("@fchrCenterDeliveryID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@fchrCenterDOrgID", SqlDbType.UniqueIdentifier),
-                    new SqlParameter("@fbitSN", SqlDbType.Bit),
-                    new SqlParameter("@fchrPostalCode", SqlDbType.NVarChar,20),
-                    new SqlParameter("@fchrMobileNo", SqlDbType.NVarChar,50),
-                    new SqlParameter("@fchrECTradeCode", SqlDbType.NVarChar,100),
-                    new SqlParameter("@fchrECOrderCode", SqlDbType.VarChar,50),
-                    new SqlParameter("@fdtmECTrade", SqlDbType.DateTime),
-                    new SqlParameter("@fintOID", SqlDbType.BigInt),
-                    new SqlParameter("@fchrExpressCode", SqlDbType.VarChar,50),
-                     new SqlParameter("@fdtmAddTime", SqlDbType.DateTime)
-            };
+                                new SqlParameter("@fchrAccountID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@fchrStoreDefineID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@fchrRetailVouchID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@fchrDepartmentID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@fdtmDate", SqlDbType.DateTime),
+                                new SqlParameter("@fchrSquadID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@fchrSquadName", SqlDbType.NVarChar,50),
+                                new SqlParameter("@fchrBackID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@fchrRetailReportID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@fchrVerifier", SqlDbType.NVarChar,50),
+                                new SqlParameter("@fbitExport", SqlDbType.Bit),
+                                new SqlParameter("@fchrCode", SqlDbType.NVarChar,30),
+                                new SqlParameter("@fchrDiscountCardCode", SqlDbType.NVarChar,20),
+                                new SqlParameter("@fchrMaker", SqlDbType.NVarChar,50),
+                                new SqlParameter("@fchrGatheringVouchID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@flotGatheringMoney", SqlDbType.Decimal),
+                                new SqlParameter("@fchrCoRetailVouchID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@flotDiscountCardRate", SqlDbType.Decimal),
+                                new SqlParameter("@fchrWholeDiscountCode", SqlDbType.NVarChar,50),
+                                new SqlParameter("@flotWholeDiscountRate", SqlDbType.Decimal),
+                                new SqlParameter("@flotWholeDiscount", SqlDbType.Decimal),
+                                new SqlParameter("@fnarvipcardcode", SqlDbType.NVarChar,30),
+                                new SqlParameter("@fdecvipdiscountrate", SqlDbType.Decimal),
+                                new SqlParameter("@flotEffaceMoney", SqlDbType.Decimal),
+                                new SqlParameter("@fchrSaleTypeCode", SqlDbType.NVarChar,50),
+                                new SqlParameter("@fchrRetailVouchRelatingID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@fchrPromotionPloyID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@fbitSettle", SqlDbType.Bit),
+                                new SqlParameter("@flotCurrentPoint", SqlDbType.Decimal),
+                                new SqlParameter("@flotPointBalance", SqlDbType.Decimal),
+                                new SqlParameter("@fchrAddPointRuleID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@fchrVIPCardClassID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@fchrVipConsumerID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@fchrPromotionPloyIDList", SqlDbType.NVarChar,800),
+                                new SqlParameter("@fdtmPlanShipmentDate", SqlDbType.DateTime),
+                                new SqlParameter("@fdtmShipmentDate", SqlDbType.DateTime),
+                                new SqlParameter("@fchrRemark", SqlDbType.NVarChar,200),
+                                new SqlParameter("@flotVipDiscountMoneySum", SqlDbType.Decimal),
+                                new SqlParameter("@flotDiscountCardMoneySum", SqlDbType.Decimal),
+                                new SqlParameter("@flotPromotionPloyMoneySum", SqlDbType.Decimal),
+                                new SqlParameter("@flotLocaleDiscountSum", SqlDbType.Decimal),
+                                new SqlParameter("@fbitCalcVIP", SqlDbType.Int),
+                                new SqlParameter("@flotSaleMoney", SqlDbType.Decimal),
+                                new SqlParameter("@flotMoneySum", SqlDbType.Float),
+                                new SqlParameter("@flotQuantitySum", SqlDbType.Float),
+                                new SqlParameter("@flotDiscountSum", SqlDbType.Decimal),
+                                new SqlParameter("@ftinPreSellType", SqlDbType.Int),
+                                new SqlParameter("@fchrShipmentStoreID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@ftinPreDownload", SqlDbType.Int),
+                                new SqlParameter("@ftinShipDownload", SqlDbType.Int),
+                                new SqlParameter("@fchrPreSellStoreID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@fbitRestore", SqlDbType.Bit),
+                                new SqlParameter("@fbitAllowGiftToken", SqlDbType.Bit),
+                                new SqlParameter("@fbitAllowStoreCard", SqlDbType.Bit),
+                                new SqlParameter("@fchrOweCustID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@fdtmPointPay", SqlDbType.DateTime),
+                                new SqlParameter("@flotPointPay", SqlDbType.Decimal),
+                                new SqlParameter("@flotPointPayMoney", SqlDbType.Decimal),
+                                new SqlParameter("@fchrSaleTypeID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@fchrUH1", SqlDbType.NVarChar,20),
+                                new SqlParameter("@fchrUH2", SqlDbType.NVarChar,20),
+                                new SqlParameter("@fchrUH3", SqlDbType.NVarChar,20),
+                                new SqlParameter("@fdtmUH4", SqlDbType.DateTime),
+                                new SqlParameter("@fintUH5", SqlDbType.Int),
+                                new SqlParameter("@fdtmUH6", SqlDbType.DateTime),
+                                new SqlParameter("@flotUH7", SqlDbType.Decimal),
+                                new SqlParameter("@fchrUH8", SqlDbType.NVarChar,4),
+                                new SqlParameter("@fchrUH9", SqlDbType.NVarChar,8),
+                                new SqlParameter("@fchrUH10", SqlDbType.NVarChar,60),
+                                new SqlParameter("@fchrUH11", SqlDbType.NVarChar,120),
+                                new SqlParameter("@fchrUH12", SqlDbType.NVarChar,120),
+                                new SqlParameter("@fchrUH13", SqlDbType.NVarChar,120),
+                                new SqlParameter("@fchrUH14", SqlDbType.NVarChar,120),
+                                new SqlParameter("@fintUH15", SqlDbType.Int),
+                                new SqlParameter("@flotUH16", SqlDbType.Decimal),
+                                new SqlParameter("@fchrdeliveradd", SqlDbType.NVarChar,255),
+                                new SqlParameter("@fchrcusperson", SqlDbType.NVarChar,100),
+                                new SqlParameter("@fchrCenterDeliveryID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@fchrCenterDOrgID", SqlDbType.UniqueIdentifier),
+                                new SqlParameter("@fbitSN", SqlDbType.Bit),
+                                new SqlParameter("@fchrPostalCode", SqlDbType.NVarChar,20),
+                                new SqlParameter("@fchrMobileNo", SqlDbType.NVarChar,50),
+                                new SqlParameter("@fchrECTradeCode", SqlDbType.NVarChar,100),
+                                new SqlParameter("@fchrECOrderCode", SqlDbType.VarChar,50),
+                                new SqlParameter("@fdtmECTrade", SqlDbType.DateTime),
+                                new SqlParameter("@fintOID", SqlDbType.BigInt),
+                                new SqlParameter("@fchrExpressCode", SqlDbType.VarChar,50),
+                                 new SqlParameter("@fdtmAddTime", SqlDbType.DateTime)
+                        };
             parameters[0].Value = row["fchrAccountID"];
             parameters[1].Value = row["fchrStoreDefineID"];
             parameters[2].Value = row["fchrRetailVouchID"];
@@ -563,118 +597,153 @@ namespace DataSync
                 parameters[87].Value = DBNull.Value;
 
 
-            return DbHelperSQL.ExecuteSql(strSql.ToString(), parameters);
+            return DbHelperSQL.ExecuteSql(strSql.ToString(), parameters) > 0;
         }
+        #endregion
 
+        #region 订单子表数据同步语句块  朱旺 2018.4.23 add
         /// <summary>
-        /// 对订单子表插入数据  朱旺 2018.4.19 add
+        /// 往订单子表插入数据(BLL)  朱旺  2018.4.23 add
         /// </summary>
-        /// <param name="row"></param>
+        /// <param name="obj"></param>
         /// <returns></returns>
         private object AddRetailVouchDetailData(object obj)
         {
-            DataRow row = obj as DataRow;
+            DataTable dataTable = GetRetailVouchDetail(int.Parse(obj.ToString())).Tables[0];
+            foreach (DataRow item in dataTable.Rows)
+            {
+                AddRetailVouchDetailData(item);
+            }
+            return 0;
+        }
+        /// <summary>
+        /// 获取订单子表表dataset 朱旺 2018.4.23 add
+        /// </summary>
+        /// <param name="Page"></param>
+        /// <returns></returns>
+        private DataSet GetRetailVouchDetail(int Page)
+        {
+            StringBuilder Sql = new StringBuilder();
+            Sql.Append(@"  select a.*,b.fdtmAddTime as fdtmAddTime2 from RetailVouchDetail as a
+                            left join RetailVouch as b
+                            on b.fchrRetailVouchID = a.fchrRetailVouchID
+                           ");
+            if (!string.IsNullOrEmpty(priEndTime))
+            {
+                Sql.AppendFormat("  where b.fdtmAddTime >'{0}' ", priEndTime);
+            }
+            Sql.AppendFormat(" order by b.fdtmAddTime OFFSET　{0} ROW  FETCH NEXT {1} ROW ONLY", (Page - 1) * 2000, 2000);
+            DataSet ds = DbHelperSQL.Query(DbHelperSQL.u8connectionString, Sql.ToString());
+            return ds;
+        }
+        /// <summary>
+        /// 往订单子表插入数据(DAL)  朱旺  2018.4.23 add
+        /// </summary>
+        /// <param name="row"></param>
+        /// <returns></returns>
+        private bool AddRetailVouchDetailData(DataRow row)
+        {
             StringBuilder strSql = new StringBuilder();
             strSql.Append("insert into RetailVouchDetail(");
             strSql.Append("fchrAccountID,fchrRetailVouchDetailId,fchrRetailVouchID,fchrItemID,fchrUnitID,fchrBatchCode,fdtmProduceDate,flotQuantity,flotMoney,fchrMemo,flotPrice,flotDiscountRate,flotDiscount,fchrFree1,fchrFree2,fchrFree3,fchrFree4,fchrFree5,fchrFree6,fchrFree7,fchrFree8,fdtmInvalidDate,fchrFree9,fchrFree10,flotQuotePrice,ftinOrder,fchrBarCode,flotRetQuantity,flotRetMoney,flotRetDiscount,fchrEmployeeID,fchrEmployeeCode,fchrEmployeeName,flotDenoQuantity,fchrCoRetailDetailID,flotlocalediscountrate,flotmoneydiscount,fbitspecial,fchrPromotionID,flotRealPrice,fintTeamNum,fbitEndPromotion,ftinPromotionType,fchrDiscountCardCode,fintVipLevel,fintVipCardCode,ftinItemModel,fbitUse,flotLocaleDiscount,fintLocaleDiscountType,fintLocaleDiscountPrice,flotDiscountMoney,flotSaleNumber,flotEffaceMoney,fchrBackID,fchrOtherOperator,flotPromotionPloyPrice,flotPromotionPloyMoney,ftinPresentType,flotVipDiscountMoney,fchrPromotionPloyID,fchrPromotionUnitGroupID,flotDiscountCardMoney,fchrPromotionPriceSpecial,fdtmOldSellDate,flotCostPrice,fchrPosID,fchrPreItemCode,fchrUB1,fchrUB2,fchrUB3,fchrUB4,flotUB5,flotUB6,fchrUB7,fchrUB8,fchrUB9,fchrUB10,fchrUB11,fchrUB12,fintUB13,fintUB14,fdtmUB15,fdtmUB16,fchrProMode,flotDeliveryQuantity,fchrPPDetailIDs,fchrSavingCardNO,fchrGiftTokenNO,fchrRetailReportID,ftinItemType,flotCardDisApportion,flotGiftDisApportion,flotCardApportion,flotGiftApportion)");
             strSql.Append(" values (");
             strSql.Append("@fchrAccountID,@fchrRetailVouchDetailId,@fchrRetailVouchID,@fchrItemID,@fchrUnitID,@fchrBatchCode,@fdtmProduceDate,@flotQuantity,@flotMoney,@fchrMemo,@flotPrice,@flotDiscountRate,@flotDiscount,@fchrFree1,@fchrFree2,@fchrFree3,@fchrFree4,@fchrFree5,@fchrFree6,@fchrFree7,@fchrFree8,@fdtmInvalidDate,@fchrFree9,@fchrFree10,@flotQuotePrice,@ftinOrder,@fchrBarCode,@flotRetQuantity,@flotRetMoney,@flotRetDiscount,@fchrEmployeeID,@fchrEmployeeCode,@fchrEmployeeName,@flotDenoQuantity,@fchrCoRetailDetailID,@flotlocalediscountrate,@flotmoneydiscount,@fbitspecial,@fchrPromotionID,@flotRealPrice,@fintTeamNum,@fbitEndPromotion,@ftinPromotionType,@fchrDiscountCardCode,@fintVipLevel,@fintVipCardCode,@ftinItemModel,@fbitUse,@flotLocaleDiscount,@fintLocaleDiscountType,@fintLocaleDiscountPrice,@flotDiscountMoney,@flotSaleNumber,@flotEffaceMoney,@fchrBackID,@fchrOtherOperator,@flotPromotionPloyPrice,@flotPromotionPloyMoney,@ftinPresentType,@flotVipDiscountMoney,@fchrPromotionPloyID,@fchrPromotionUnitGroupID,@flotDiscountCardMoney,@fchrPromotionPriceSpecial,@fdtmOldSellDate,@flotCostPrice,@fchrPosID,@fchrPreItemCode,@fchrUB1,@fchrUB2,@fchrUB3,@fchrUB4,@flotUB5,@flotUB6,@fchrUB7,@fchrUB8,@fchrUB9,@fchrUB10,@fchrUB11,@fchrUB12,@fintUB13,@fintUB14,@fdtmUB15,@fdtmUB16,@fchrProMode,@flotDeliveryQuantity,@fchrPPDetailIDs,@fchrSavingCardNO,@fchrGiftTokenNO,@fchrRetailReportID,@ftinItemType,@flotCardDisApportion,@flotGiftDisApportion,@flotCardApportion,@flotGiftApportion)");
             SqlParameter[] parameters = {
-                    new SqlParameter("@fchrAccountID", SqlDbType.UniqueIdentifier,16),
-                    new SqlParameter("@fchrRetailVouchDetailId", SqlDbType.UniqueIdentifier,16),
-                    new SqlParameter("@fchrRetailVouchID", SqlDbType.UniqueIdentifier,16),
-                    new SqlParameter("@fchrItemID", SqlDbType.UniqueIdentifier,16),
-                    new SqlParameter("@fchrUnitID", SqlDbType.UniqueIdentifier,16),
-                    new SqlParameter("@fchrBatchCode", SqlDbType.NVarChar,40),
-                    new SqlParameter("@fdtmProduceDate", SqlDbType.DateTime),
-                    new SqlParameter("@flotQuantity", SqlDbType.Decimal,13),
-                    new SqlParameter("@flotMoney", SqlDbType.Decimal,13),
-                    new SqlParameter("@fchrMemo", SqlDbType.NVarChar,200),
-                    new SqlParameter("@flotPrice", SqlDbType.Decimal,13),
-                    new SqlParameter("@flotDiscountRate", SqlDbType.Decimal,13),
-                    new SqlParameter("@flotDiscount", SqlDbType.Decimal,13),
-                    new SqlParameter("@fchrFree1", SqlDbType.NVarChar,50),
-                    new SqlParameter("@fchrFree2", SqlDbType.NVarChar,50),
-                    new SqlParameter("@fchrFree3", SqlDbType.NVarChar,50),
-                    new SqlParameter("@fchrFree4", SqlDbType.NVarChar,50),
-                    new SqlParameter("@fchrFree5", SqlDbType.NVarChar,50),
-                    new SqlParameter("@fchrFree6", SqlDbType.NVarChar,50),
-                    new SqlParameter("@fchrFree7", SqlDbType.NVarChar,50),
-                    new SqlParameter("@fchrFree8", SqlDbType.NVarChar,50),
-                    new SqlParameter("@fdtmInvalidDate", SqlDbType.DateTime),
-                    new SqlParameter("@fchrFree9", SqlDbType.NVarChar,50),
-                    new SqlParameter("@fchrFree10", SqlDbType.NVarChar,50),
-                    new SqlParameter("@flotQuotePrice", SqlDbType.Decimal,13),
-                    new SqlParameter("@ftinOrder", SqlDbType.Int,4),
-                    new SqlParameter("@fchrBarCode", SqlDbType.NVarChar,40),
-                    new SqlParameter("@flotRetQuantity", SqlDbType.Decimal,13),
-                    new SqlParameter("@flotRetMoney", SqlDbType.Decimal,13),
-                    new SqlParameter("@flotRetDiscount", SqlDbType.Decimal,13),
-                    new SqlParameter("@fchrEmployeeID", SqlDbType.UniqueIdentifier,16),
-                    new SqlParameter("@fchrEmployeeCode", SqlDbType.NVarChar,50),
-                    new SqlParameter("@fchrEmployeeName", SqlDbType.NVarChar,50),
-                    new SqlParameter("@flotDenoQuantity", SqlDbType.Decimal,13),
-                    new SqlParameter("@fchrCoRetailDetailID", SqlDbType.UniqueIdentifier,16),
-                    new SqlParameter("@flotlocalediscountrate", SqlDbType.Decimal,13),
-                    new SqlParameter("@flotmoneydiscount", SqlDbType.Decimal,13),
-                    new SqlParameter("@fbitspecial", SqlDbType.NVarChar,10),
-                    new SqlParameter("@fchrPromotionID", SqlDbType.NVarChar,2000),
-                    new SqlParameter("@flotRealPrice", SqlDbType.Decimal,13),
-                    new SqlParameter("@fintTeamNum", SqlDbType.Int,4),
-                    new SqlParameter("@fbitEndPromotion", SqlDbType.Bit,1),
-                    new SqlParameter("@ftinPromotionType", SqlDbType.TinyInt,1),
-                    new SqlParameter("@fchrDiscountCardCode", SqlDbType.NVarChar,20),
-                    new SqlParameter("@fintVipLevel", SqlDbType.Int,4),
-                    new SqlParameter("@fintVipCardCode", SqlDbType.NVarChar,30),
-                    new SqlParameter("@ftinItemModel", SqlDbType.TinyInt,1),
-                    new SqlParameter("@fbitUse", SqlDbType.Bit,1),
-                    new SqlParameter("@flotLocaleDiscount", SqlDbType.Decimal,13),
-                    new SqlParameter("@fintLocaleDiscountType", SqlDbType.Decimal,13),
-                    new SqlParameter("@fintLocaleDiscountPrice", SqlDbType.Decimal,13),
-                    new SqlParameter("@flotDiscountMoney", SqlDbType.Decimal,13),
-                    new SqlParameter("@flotSaleNumber", SqlDbType.Decimal,13),
-                    new SqlParameter("@flotEffaceMoney", SqlDbType.Decimal,13),
-                    new SqlParameter("@fchrBackID", SqlDbType.UniqueIdentifier,16),
-                    new SqlParameter("@fchrOtherOperator", SqlDbType.NVarChar,50),
-                    new SqlParameter("@flotPromotionPloyPrice", SqlDbType.Decimal,13),
-                    new SqlParameter("@flotPromotionPloyMoney", SqlDbType.Decimal,13),
-                    new SqlParameter("@ftinPresentType", SqlDbType.TinyInt,1),
-                    new SqlParameter("@flotVipDiscountMoney", SqlDbType.Decimal,13),
-                    new SqlParameter("@fchrPromotionPloyID", SqlDbType.NVarChar,800),
-                    new SqlParameter("@fchrPromotionUnitGroupID", SqlDbType.NVarChar,800),
-                    new SqlParameter("@flotDiscountCardMoney", SqlDbType.Decimal,13),
-                    new SqlParameter("@fchrPromotionPriceSpecial", SqlDbType.NVarChar,10),
-                    new SqlParameter("@fdtmOldSellDate", SqlDbType.DateTime),
-                    new SqlParameter("@flotCostPrice", SqlDbType.Decimal,13),
-                    new SqlParameter("@fchrPosID", SqlDbType.UniqueIdentifier,16),
-                    new SqlParameter("@fchrPreItemCode", SqlDbType.NVarChar,255),
-                    new SqlParameter("@fchrUB1", SqlDbType.NVarChar,60),
-                    new SqlParameter("@fchrUB2", SqlDbType.NVarChar,60),
-                    new SqlParameter("@fchrUB3", SqlDbType.NVarChar,60),
-                    new SqlParameter("@fchrUB4", SqlDbType.NVarChar,60),
-                    new SqlParameter("@flotUB5", SqlDbType.Decimal,13),
-                    new SqlParameter("@flotUB6", SqlDbType.Decimal,13),
-                    new SqlParameter("@fchrUB7", SqlDbType.NVarChar,120),
-                    new SqlParameter("@fchrUB8", SqlDbType.NVarChar,120),
-                    new SqlParameter("@fchrUB9", SqlDbType.NVarChar,120),
-                    new SqlParameter("@fchrUB10", SqlDbType.NVarChar,120),
-                    new SqlParameter("@fchrUB11", SqlDbType.NVarChar,120),
-                    new SqlParameter("@fchrUB12", SqlDbType.NVarChar,120),
-                    new SqlParameter("@fintUB13", SqlDbType.Int,4),
-                    new SqlParameter("@fintUB14", SqlDbType.Int,4),
-                    new SqlParameter("@fdtmUB15", SqlDbType.DateTime),
-                    new SqlParameter("@fdtmUB16", SqlDbType.DateTime),
-                    new SqlParameter("@fchrProMode", SqlDbType.NVarChar,60),
-                    new SqlParameter("@flotDeliveryQuantity", SqlDbType.Decimal,13),
-                    new SqlParameter("@fchrPPDetailIDs", SqlDbType.NText),
-                    new SqlParameter("@fchrSavingCardNO", SqlDbType.NText),
-                    new SqlParameter("@fchrGiftTokenNO", SqlDbType.NText),
-                    new SqlParameter("@fchrRetailReportID", SqlDbType.UniqueIdentifier,16),
-                    new SqlParameter("@ftinItemType", SqlDbType.TinyInt,1),
-                    new SqlParameter("@flotCardDisApportion", SqlDbType.Decimal,13),
-                    new SqlParameter("@flotGiftDisApportion", SqlDbType.Decimal,13),
-                    new SqlParameter("@flotCardApportion", SqlDbType.Decimal,13),
-                    new SqlParameter("@flotGiftApportion", SqlDbType.Decimal,13)};
+                                new SqlParameter("@fchrAccountID", SqlDbType.UniqueIdentifier,16),
+                                new SqlParameter("@fchrRetailVouchDetailId", SqlDbType.UniqueIdentifier,16),
+                                new SqlParameter("@fchrRetailVouchID", SqlDbType.UniqueIdentifier,16),
+                                new SqlParameter("@fchrItemID", SqlDbType.UniqueIdentifier,16),
+                                new SqlParameter("@fchrUnitID", SqlDbType.UniqueIdentifier,16),
+                                new SqlParameter("@fchrBatchCode", SqlDbType.NVarChar,40),
+                                new SqlParameter("@fdtmProduceDate", SqlDbType.DateTime),
+                                new SqlParameter("@flotQuantity", SqlDbType.Decimal,13),
+                                new SqlParameter("@flotMoney", SqlDbType.Decimal,13),
+                                new SqlParameter("@fchrMemo", SqlDbType.NVarChar,200),
+                                new SqlParameter("@flotPrice", SqlDbType.Decimal,13),
+                                new SqlParameter("@flotDiscountRate", SqlDbType.Decimal,13),
+                                new SqlParameter("@flotDiscount", SqlDbType.Decimal,13),
+                                new SqlParameter("@fchrFree1", SqlDbType.NVarChar,50),
+                                new SqlParameter("@fchrFree2", SqlDbType.NVarChar,50),
+                                new SqlParameter("@fchrFree3", SqlDbType.NVarChar,50),
+                                new SqlParameter("@fchrFree4", SqlDbType.NVarChar,50),
+                                new SqlParameter("@fchrFree5", SqlDbType.NVarChar,50),
+                                new SqlParameter("@fchrFree6", SqlDbType.NVarChar,50),
+                                new SqlParameter("@fchrFree7", SqlDbType.NVarChar,50),
+                                new SqlParameter("@fchrFree8", SqlDbType.NVarChar,50),
+                                new SqlParameter("@fdtmInvalidDate", SqlDbType.DateTime),
+                                new SqlParameter("@fchrFree9", SqlDbType.NVarChar,50),
+                                new SqlParameter("@fchrFree10", SqlDbType.NVarChar,50),
+                                new SqlParameter("@flotQuotePrice", SqlDbType.Decimal,13),
+                                new SqlParameter("@ftinOrder", SqlDbType.Int,4),
+                                new SqlParameter("@fchrBarCode", SqlDbType.NVarChar,40),
+                                new SqlParameter("@flotRetQuantity", SqlDbType.Decimal,13),
+                                new SqlParameter("@flotRetMoney", SqlDbType.Decimal,13),
+                                new SqlParameter("@flotRetDiscount", SqlDbType.Decimal,13),
+                                new SqlParameter("@fchrEmployeeID", SqlDbType.UniqueIdentifier,16),
+                                new SqlParameter("@fchrEmployeeCode", SqlDbType.NVarChar,50),
+                                new SqlParameter("@fchrEmployeeName", SqlDbType.NVarChar,50),
+                                new SqlParameter("@flotDenoQuantity", SqlDbType.Decimal,13),
+                                new SqlParameter("@fchrCoRetailDetailID", SqlDbType.UniqueIdentifier,16),
+                                new SqlParameter("@flotlocalediscountrate", SqlDbType.Decimal,13),
+                                new SqlParameter("@flotmoneydiscount", SqlDbType.Decimal,13),
+                                new SqlParameter("@fbitspecial", SqlDbType.NVarChar,10),
+                                new SqlParameter("@fchrPromotionID", SqlDbType.NVarChar,2000),
+                                new SqlParameter("@flotRealPrice", SqlDbType.Decimal,13),
+                                new SqlParameter("@fintTeamNum", SqlDbType.Int,4),
+                                new SqlParameter("@fbitEndPromotion", SqlDbType.Bit,1),
+                                new SqlParameter("@ftinPromotionType", SqlDbType.TinyInt,1),
+                                new SqlParameter("@fchrDiscountCardCode", SqlDbType.NVarChar,20),
+                                new SqlParameter("@fintVipLevel", SqlDbType.Int,4),
+                                new SqlParameter("@fintVipCardCode", SqlDbType.NVarChar,30),
+                                new SqlParameter("@ftinItemModel", SqlDbType.TinyInt,1),
+                                new SqlParameter("@fbitUse", SqlDbType.Bit,1),
+                                new SqlParameter("@flotLocaleDiscount", SqlDbType.Decimal,13),
+                                new SqlParameter("@fintLocaleDiscountType", SqlDbType.Decimal,13),
+                                new SqlParameter("@fintLocaleDiscountPrice", SqlDbType.Decimal,13),
+                                new SqlParameter("@flotDiscountMoney", SqlDbType.Decimal,13),
+                                new SqlParameter("@flotSaleNumber", SqlDbType.Decimal,13),
+                                new SqlParameter("@flotEffaceMoney", SqlDbType.Decimal,13),
+                                new SqlParameter("@fchrBackID", SqlDbType.UniqueIdentifier,16),
+                                new SqlParameter("@fchrOtherOperator", SqlDbType.NVarChar,50),
+                                new SqlParameter("@flotPromotionPloyPrice", SqlDbType.Decimal,13),
+                                new SqlParameter("@flotPromotionPloyMoney", SqlDbType.Decimal,13),
+                                new SqlParameter("@ftinPresentType", SqlDbType.TinyInt,1),
+                                new SqlParameter("@flotVipDiscountMoney", SqlDbType.Decimal,13),
+                                new SqlParameter("@fchrPromotionPloyID", SqlDbType.NVarChar,800),
+                                new SqlParameter("@fchrPromotionUnitGroupID", SqlDbType.NVarChar,800),
+                                new SqlParameter("@flotDiscountCardMoney", SqlDbType.Decimal,13),
+                                new SqlParameter("@fchrPromotionPriceSpecial", SqlDbType.NVarChar,10),
+                                new SqlParameter("@fdtmOldSellDate", SqlDbType.DateTime),
+                                new SqlParameter("@flotCostPrice", SqlDbType.Decimal,13),
+                                new SqlParameter("@fchrPosID", SqlDbType.UniqueIdentifier,16),
+                                new SqlParameter("@fchrPreItemCode", SqlDbType.NVarChar,255),
+                                new SqlParameter("@fchrUB1", SqlDbType.NVarChar,60),
+                                new SqlParameter("@fchrUB2", SqlDbType.NVarChar,60),
+                                new SqlParameter("@fchrUB3", SqlDbType.NVarChar,60),
+                                new SqlParameter("@fchrUB4", SqlDbType.NVarChar,60),
+                                new SqlParameter("@flotUB5", SqlDbType.Decimal,13),
+                                new SqlParameter("@flotUB6", SqlDbType.Decimal,13),
+                                new SqlParameter("@fchrUB7", SqlDbType.NVarChar,120),
+                                new SqlParameter("@fchrUB8", SqlDbType.NVarChar,120),
+                                new SqlParameter("@fchrUB9", SqlDbType.NVarChar,120),
+                                new SqlParameter("@fchrUB10", SqlDbType.NVarChar,120),
+                                new SqlParameter("@fchrUB11", SqlDbType.NVarChar,120),
+                                new SqlParameter("@fchrUB12", SqlDbType.NVarChar,120),
+                                new SqlParameter("@fintUB13", SqlDbType.Int,4),
+                                new SqlParameter("@fintUB14", SqlDbType.Int,4),
+                                new SqlParameter("@fdtmUB15", SqlDbType.DateTime),
+                                new SqlParameter("@fdtmUB16", SqlDbType.DateTime),
+                                new SqlParameter("@fchrProMode", SqlDbType.NVarChar,60),
+                                new SqlParameter("@flotDeliveryQuantity", SqlDbType.Decimal,13),
+                                new SqlParameter("@fchrPPDetailIDs", SqlDbType.NText),
+                                new SqlParameter("@fchrSavingCardNO", SqlDbType.NText),
+                                new SqlParameter("@fchrGiftTokenNO", SqlDbType.NText),
+                                new SqlParameter("@fchrRetailReportID", SqlDbType.UniqueIdentifier,16),
+                                new SqlParameter("@ftinItemType", SqlDbType.TinyInt,1),
+                                new SqlParameter("@flotCardDisApportion", SqlDbType.Decimal,13),
+                                new SqlParameter("@flotGiftDisApportion", SqlDbType.Decimal,13),
+                                new SqlParameter("@flotCardApportion", SqlDbType.Decimal,13),
+                                new SqlParameter("@flotGiftApportion", SqlDbType.Decimal,13)};
 
             if (row["fchrAccountID"] != null && !string.IsNullOrEmpty(row["fchrAccountID"].ToString()) && Guid.Parse(row["fchrAccountID"].ToString()) != Guid.Empty)
                 parameters[0].Value = row["fchrAccountID"];
@@ -790,7 +859,9 @@ namespace DataSync
             parameters[92].Value = row["flotGiftDisApportion"];
             parameters[93].Value = row["flotCardApportion"];
             parameters[94].Value = row["flotGiftApportion"];
-            return DbHelperSQL.ExecuteSql(strSql.ToString(), parameters);
+            return DbHelperSQL.ExecuteSql(strSql.ToString(), parameters) > 0;
         }
+        #endregion
     }
 }
+
