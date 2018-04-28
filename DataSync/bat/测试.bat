@@ -1,1 +1,1 @@
-start notepad++.exe
+epad++.exe

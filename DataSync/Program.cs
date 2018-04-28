@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace DataSync
@@ -11,7 +12,11 @@ namespace DataSync
     {
         static void Main(string[] args)
         {
-            RetailVouchDetail();
+            new Thread(new ParameterizedThreadStart(RetailVouch)).Start(0);
+            new Thread(new ParameterizedThreadStart(RetailVouchDetail)).Start(0);
+            //string type = Console.ReadLine();
+
+            //RetailVouchDetail();
             //ManualSync sync = new ManualSync("StoreDefine");
             //sync.SyncData();
             //RetailVouchDetail();
@@ -26,18 +31,15 @@ namespace DataSync
             //}
         }
 
-        private static object RetailVouch(object obj)
+        private static void RetailVouch(object o)
         {
             Sync sync = new Sync("RetailVouch");
             sync.SyncData();
-            return 0;
         }
-        private static object RetailVouchDetail()
+        private static void RetailVouchDetail(object o)
         {
             Sync sync = new Sync("RetailVouchDetail");
             sync.SyncData();
-            return 0;
         }
     }
-
 }
